@@ -1,0 +1,11 @@
+#version: "3"
+services:
+
+  esp32-device-1:
+    image: docbuster/esp32-qemu-spiffs-mqtt:device-1
+
+  esp32-device-2:
+    image: docbuster/esp32-qemu-spiffs-mqtt:device-2
+
+  esp32-device-3:
+    image: docbuster/esp32-qemu-spiffs-mqtt:device-3

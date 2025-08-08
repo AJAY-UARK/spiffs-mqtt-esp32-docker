@@ -1,0 +1,2 @@
+source /home/ajiot/spiffs-mqtt-esp32-docker/flash-mqtt/build/bootloader/gdbinit/symbols
+source /home/ajiot/spiffs-mqtt-esp32-docker/flash-mqtt/build/bootloader/gdbinit/connect

@@ -1,0 +1,19 @@
+menu "MQTT Application Configuration"
+
+#config DEVICE_ID
+#    string "MQTT Device ID"
+#    default "esp-device-1"
+#    help
+#        MQTT client identifier and topic prefix for publishing messages.
+#
+#config BROKER_URL
+#    string "Broker URL"
+#    default "mqtt://mqtt.eclipseprojects.io"
+#    help
+#        URL of the broker to connect to
+#
+#config BROKER_URL_FROM_STDIN
+#    bool
+#    default y if BROKER_URL = "FROM_STDIN"
+#
+endmenu
