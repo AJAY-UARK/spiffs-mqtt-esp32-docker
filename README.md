@@ -1,108 +1,178 @@
 # spiffs-mqtt-esp32-docker
 
-ESP32 (QEMU) + SPIFFS + MQTT example with Docker.  
-This repo contains an ESP-IDF project (`flash-mqtt/`), pre-built flash images (`flash_device1.bin`, `flash_device2.bin`, `flash_device3.bin`, `flash_image.bin`), and Docker + compose files to run one or multiple simulated ESP32 devices.
+ESP32 (QEMU) + SPIFFS + MQTT example (QEMU-sim + Docker).
+This repository contains an ESP-IDF project (`flash-mqtt/`), prebuilt flash images (`flash_device1.bin`, `flash_device2.bin`, `flash_device3.bin`, `flash_image.bin`), and a Dockerfile + `docker-compose.yml` to run simulated ESP32 devices.
 
----
+**Repo root (example files present):**
 
-## ⚠️ Quick links
-- **Risky / destructive commands** (pull/push/erase): see [Troubleshooting & Safety](#troubleshooting--safety)
-- **If you change the SPIFFS contents**: see [Edit SPIFFS content](#2---edit-spiffs-content)
-
----
-
-## Quick summary
-- Build firmware with `idf.py` (pass `DEVICE_ID` and `TOPIC` at build time).
-- Generate SPIFFS image (`build/storage.bin`) from `spiffs_image/` (contains `data.txt`).
-- Merge app + bootloader + partition + spiffs into `flash_image.bin` with `esptool.py`.
-- Run locally with QEMU or via Docker containers (Dockerfile currently copies one `flash_deviceX.bin` into the image).
-
----
-
-## Prerequisites (WSL / Ubuntu)
-- **ESP-IDF v6.x** (`idf.py` in PATH)
-- Python 3 (`python`)
-- `esptool.py` (pip install esptool)
-- `qemu-system-xtensa` (the Dockerfile bundles QEMU for containers)
-- Docker & docker-compose (if using Docker)
-- An MQTT client like `mosquitto_sub` for testing
-
-> This README is a Markdown file — paste it into `README.md` in repo root so GitHub renders it.
-
----
-
-## Repo layout (what’s important)
 ```
-.
-├─ Dockerfile
-├─ docker-compose.yml
-├─ flash-mqtt/                # ESP-IDF project (source)
-│  ├─ main/
-│  ├─ CMakeLists.txt
-│  ├─ spiffs_image/           # source files (data.txt) - keep this
-│  └─ build/                  # build outputs (can be large)
-├─ flash_device1.bin
-├─ flash_device2.bin
-├─ flash_device3.bin
-├─ flash_image.bin
-└─ README.md
+Dockerfile  docker-compose.yml  flash_device1.bin  flash_device3.bin  qemu.log
+README.md   flash-mqtt          flash_device2.bin  flash_image.bin    single_device_spiffs_Dockerfile
 ```
 
-> Note: there is **no `tools/` directory** used here — this repo uses the `spiffsgen.py` that lives inside your ESP-IDF tree: `$IDF_PATH/components/spiffs/spiffsgen.py` (see SPIFFS section).
+---
+
+## Important safety note (read first)
+
+Some commands can overwrite or erase data (for example: `esptool.py write_flash --erase-all`, `git push --force`). If you are unsure, copy command output and ask before running destructive commands.
 
 ---
 
-## 1 — Build firmware (with dynamic DEVICE_ID / TOPIC)
-From repo root:
+## Quick summary of what you can do
+
+* Run a prebuilt image in QEMU locally (fast).
+* Rebuild firmware in `flash-mqtt/` with custom `DEVICE_ID` and `TOPIC`.
+* Regenerate SPIFFS (from `flash-mqtt/spiffs_image/data.txt`) and merge into a new `flash_image.bin`.
+* Build Docker images that embed a chosen `flash_device*.bin`, and run with `docker-compose`.
+
+---
+
+## 0. Files & locations to know (your repo)
+
+* Root-level `flash_image.bin` — already merged image (QEMU / Docker can use this).
+* Root-level `flash_device1.bin` `flash_device2.bin` `flash_device3.bin` — per-device binaries you can bake into Docker images.
+* `flash-mqtt/` — the ESP-IDF project; contains:
+
+  * `spiffs_image/` (source files, e.g. `data.txt`)
+  * `build/` (build output after `idf.py build`)
+  * `my_partitions.csv` or `build/partition_table/partition-table.csv` — contains SPIFFS offset/size
+
+---
+
+## 1. Prerequisites & environment setup
+
+### A — Ubuntu / WSL (recommended)
 
 ```bash
-cd ~/spiffs-mqtt-esp32-docker/flash-mqtt
+# Update and essentials
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git python3 python3-pip build-essential cmake ninja-build ccache libffi-dev libssl-dev
 
-# build with device id and topic
-idf.py -DDEVICE_ID="device3" -DTOPIC="device3/data" build
+# Install esptool (merge/flash)
+pip3 install --user esptool
 
-# optionally override broker
-# idf.py -DDEVICE_ID="device3" -DTOPIC="device3/data" -DBROKER_URL="broker.hivemq.com" build
+# MQTT test client
+sudo apt install -y mosquitto-clients
+
+# Docker
+sudo apt install -y docker.io docker-compose
+sudo usermod -aG docker $USER   # then log out and back in (or reboot)
+
+# NOTE: QEMU xtensa binaries are not always in distro repos — you can use the Docker images in this repo (they bundle QEMU).
 ```
 
-Output: `flash-mqtt/build/` contains `mqtt_tcp.bin`, `bootloader/bootloader.bin`, `partition_table/partition-table.bin`, etc.
+### B — macOS (Homebrew)
+
+```bash
+brew update
+brew install git python cmake ninja ccache mosquitto
+pip3 install --user esptool
+# Install Docker Desktop from https://www.docker.com/get-started
+```
+
+### C — Windows
+
+* Recommended: install **WSL2** + Ubuntu and follow the Ubuntu steps.
+* Alternatively install Docker Desktop (includes docker-compose), Git for Windows, Python, and pip on native Windows.
 
 ---
 
-## 2 — Edit SPIFFS content (data.txt)
-If you want different payloads, edit:
+## 2. Validate key tools
 
+```bash
+# Verify IDF only if you plan to build from source:
+echo "$IDF_PATH"       # must be set if building from source
+idf.py --version       # fails if IDF not installed
+
+# Check esptool
+~/.local/bin/esptool.py --version  # or `esptool.py --version` if in PATH
+
+# Docker
+docker --version
+docker-compose --version
 ```
+
+---
+
+## 3. Running a prebuilt image (fast way — QEMU)
+
+If you just want to let others reproduce behavior with your existing `flash_image.bin`:
+
+```bash
+cd /path/to/spiffs-mqtt-esp32-docker
+
+# run QEMU with the merged flash image (this is the exact command used in this repo)
+qemu-system-xtensa -nographic -machine esp32 -drive file=flash_image.bin,if=mtd,format=raw
+```
+
+* The QEMU terminal will show ESP logs (the program prints `DEVICE_ID` and `TOPIC` — useful to verify).
+* If QEMU is missing locally, collaborators can use the Docker images provided here which include the QEMU binary.
+
+---
+
+## 4. Rebuild firmware from source (optional — for collaborators who want to modify code)
+
+**A: Prepare ESP-IDF**
+(If collaborators want to rebuild firmware, they must install ESP-IDF and run `export.sh` as described in official docs: [https://docs.espressif.com/projects/esp-idf/](https://docs.espressif.com/projects/esp-idf/))
+
+Minimal steps (example, run once):
+
+```bash
+# clone esp-idf (pick appropriate tag/version)
+git clone --recursive https://github.com/espressif/esp-idf.git
+cd esp-idf
+# optionally check out a stable version tag, e.g. v6.0:
+# git checkout v6.0
+./install.sh
+. ./export.sh           # in each shell where you use idf.py
+idf.py --version
+```
+
+**B: Build the firmware in repo**
+
+```bash
+cd flash-mqtt
+# Build and set device id & topic at compile time
+idf.py -DDEVICE_ID="device3" -DTOPIC="device3/data" build
+```
+
+* `flash-mqtt/build/` will contain build outputs: `mqtt_tcp.bin`, `bootloader/bootloader.bin`, `partition_table/partition-table.bin`, etc.
+
+---
+
+## 5. Edit SPIFFS content (data files for publishing)
+
+If you want to change what the simulated device publishes, edit:
+
+```text
 flash-mqtt/spiffs_image/data.txt
-```
-
-Format (CSV `device,value`) — matches the project code:
-```
+# Format: CSV lines like:
 device3,321
 device3,654
 device3,987
 ```
 
-**Important:** regenerate the `storage.bin` *before* you run the `esptool.py merge_bin` step. See next section.
+**Important:** Regenerate the SPIFFS binary **before** merging flash images.
 
 ---
 
-## 3 — Generate SPIFFS image (`build/storage.bin`)
-Use the `spiffsgen.py` that comes with your ESP-IDF (the path you used earlier):
+## 6. Generate SPIFFS image (`storage.bin`) — use the ESP-IDF script
+
+This repo uses the `spiffsgen.py` from your ESP-IDF installation. Run the version from your IDF:
 
 ```bash
+# from repo root
 python $IDF_PATH/components/spiffs/spiffsgen.py 0x0B0000 ./flash-mqtt/spiffs_image flash-mqtt/build/storage.bin
 ```
 
-- `0x0B0000` = SPIFFS partition **offset** used in this repo — verify with `flash-mqtt/build/partition_table/partition-table.csv` (or your `partitions.csv`) and use the offset shown there.
-- If the partition **size** is needed by your tool, use the `Size` column from the same CSV.
-
-**Do this step every time you change `spiffs_image/data.txt`** (before merge).
+* `0x0B0000` is the SPIFFS partition **offset** used here — verify by opening `flash-mqtt/my_partitions.csv` or `flash-mqtt/build/partition_table/partition-table.csv` and using the **Offset** column for the spiffs partition.
+* If your partition table uses a different offset or size, substitute the correct offset and size.
 
 ---
 
-## 4 — Merge into single flash image
-From repo root (creates `flash_image.bin`):
+## 7. Merge binaries into a single `flash_image.bin`
+
+From repo root (this recreates `flash_image.bin`):
 
 ```bash
 esptool.py --chip esp32 merge_bin -o flash_image.bin --fill-flash-size 2MB \
@@ -112,78 +182,152 @@ esptool.py --chip esp32 merge_bin -o flash_image.bin --fill-flash-size 2MB \
   0xB0000  flash-mqtt/build/storage.bin
 ```
 
-- Make sure `0xB0000` (the SPIFFS offset) matches the one in your partition table file. If you edited the partition table, use the updated offset/size values.
+* Confirm `0xB0000` matches the SPIFFS offset in your partition table (if you changed partitions, update the offset accordingly).
 
 ---
 
-## 5 — Run in QEMU (local)
-Run exactly the QEMU command you use in this repo (keeps flow identical to your setup):
+## 8. Run QEMU locally (after merge)
 
 ```bash
+# from repo root
 qemu-system-xtensa -nographic -machine esp32 -drive file=flash_image.bin,if=mtd,format=raw
 ```
 
-- This command boots the merged flash image and prints logs to the terminal. Look for `ESP_LOGI` messages showing `DEVICE_ID` and `TOPIC` for debugging.
-- (No telnet instructions here — you can read the logs directly in the terminal where QEMU runs.)
-
----
-
-## 6 — Docker: bake per-device flash into images and run
-Your Dockerfile copies a chosen `flash_deviceX.bin` into the image. **Before running `docker build`**, edit the Dockerfile `COPY` line to point to the specific device binary you want baked into that image.
-
-Example Dockerfile line (current):
-```dockerfile
-COPY flash_device2.bin /opt/flash_image.bin
-```
-
-### Build per-device images (concise flow)
-```bash
-# build image that contains flash_device2.bin
-docker build -t docbuster/esp32-qemu-spiffs-mqtt:device-2 .
-
-# if you want device1 image, update Dockerfile COPY to flash_device1.bin, then:
-docker build -t docbuster/esp32-qemu-spiffs-mqtt:device-1 -f Dockerfile .
-```
-
-**After** building the images, update `docker-compose.yml` to reference the image tags you created (the compose file uses the image names). Then run:
-
-```bash
-docker-compose up
-# or
-docker-compose up -d
-```
-
-**Note:** You can also avoid rebuilding the Docker image each time by mounting a flash file into the container at runtime (advanced). For now, modifying `COPY` then `docker build` keeps things simple and reproducible.
-
----
-
-## 7 — If you change `spiffs_image/data.txt` (summary)
-1. Edit `flash-mqtt/spiffs_image/data.txt`.  
-2. Regenerate `flash-mqtt/build/storage.bin` with `$IDF_PATH/components/spiffs/spiffsgen.py` (see section 3).  
-3. Run `esptool.py merge_bin` (section 4) to create a fresh `flash_image.bin`.  
-4. If your Docker images embed flash files, **rebuild** the Docker image(s) that should include the updated file and update `docker-compose.yml` if necessary.
-
-A link: see [Edit SPIFFS content](#2---edit-spiffs-content) above.
-
----
-
-## 8 — Test MQTT externally
-Subscribe to the topic your simulated device uses (example with HiveMQ public broker):
+* Watch the console for `ESP_LOGI` lines that show `DEVICE_ID` and `TOPIC`.
+* Use `mosquitto_sub` on host to confirm messages:
 
 ```bash
 mosquitto_sub -h broker.hivemq.com -t "device3/data" -v
 ```
 
-Replace broker and topic as needed.
+---
+
+## 9. Docker workflow (bake flash into image & run)
+
+**Important** — your repo’s `Dockerfile` lives at root and currently copies one flash image into the container. Edit the `COPY` line to pick the flash you want to bake.
+
+Example in `Dockerfile`:
+
+```dockerfile
+# modify to choose the binary you want baked into the container:
+COPY flash_device2.bin /opt/flash_image.bin
+ENTRYPOINT ["qemu-system-xtensa", "-nographic", "-machine", "esp32", "-drive", "file=/opt/flash_image.bin,if=mtd,format=raw"]
+```
+
+**Build image for a device:**
+
+```bash
+# (edit Dockerfile COPY as needed, then:)
+docker build -t docbuster/esp32-qemu-spiffs-mqtt:device-2 .
+```
+
+**Alternative: create per-device Dockerfiles quickly**
+
+```bash
+cp Dockerfile Dockerfile.device1
+sed -i 's/flash_device2.bin/flash_device1.bin/' Dockerfile.device1
+docker build -f Dockerfile.device1 -t docbuster/esp32-qemu-spiffs-mqtt:device-1 .
+
+cp Dockerfile Dockerfile.device3
+sed -i 's/flash_device2.bin/flash_device3.bin/' Dockerfile.device3
+docker build -f Dockerfile.device3 -t docbuster/esp32-qemu-spiffs-mqtt:device-3 .
+```
+
+**Run with docker-compose**
+
+* Update `docker-compose.yml` to reference the image tags you built, then:
+
+```bash
+docker-compose up
+# or run in background
+docker-compose up -d
+```
+
+**View logs**
+
+```bash
+docker ps
+docker logs -f <container-id-or-name>
+```
 
 ---
 
-## Troubleshooting & Safety
-- **Check partition table offsets/sizes:** open `flash-mqtt/build/partition_table/partition-table.csv` (or your `partitions.csv`) and use the `Offset` and `Size` values for the SPIFFS partition in `spiffsgen.py` and `esptool` commands.
-- **spiffsgen.py path:** use the ESP-IDF copy at `$IDF_PATH/components/spiffs/spiffsgen.py` (that’s what this repo uses).
-- **MQTT messages not appearing:** verify `DEVICE_ID` and `TOPIC` printed in QEMU logs; then confirm you subscribe to the exact same topic (topic strings are case-sensitive).
-- **Docker image wrong file baked:** edit `COPY` line in Dockerfile to the correct `flash_deviceX.bin`, rebuild the image, update `docker-compose.yml` to use that image tag, then `docker-compose up`.
-- **Risky commands:** `git rm --cached`, `git push --force`, `esptool.py --port ... write_flash --erase-all` can remove or overwrite data. If you are unsure, check here first and post the command and full output.
+## 10. Quick “minimal” test script (single line)
+
+This builds, regenerates SPIFFS, merges (assumes IDF and offsets correct):
+
+```bash
+cd flash-mqtt && idf.py -DDEVICE_ID="device3" -DTOPIC="device3/data" build && \
+python $IDF_PATH/components/spiffs/spiffsgen.py 0x0B0000 ./spiffs_image build/storage.bin && \
+cd .. && \
+esptool.py --chip esp32 merge_bin -o flash_image.bin --fill-flash-size 2MB \
+  0x1000 flash-mqtt/build/bootloader/bootloader.bin \
+  0x8000 flash-mqtt/build/partition_table/partition-table.bin \
+  0x10000 flash-mqtt/build/mqtt_tcp.bin \
+  0xB0000 flash-mqtt/build/storage.bin
+```
 
 ---
 
+## 11. What to include in the repo (for collaborators)
+
+To make this repo reproducible, include:
+
+* `flash-mqtt/` (source), including `spiffs_image/data.txt`
+* `flash-mqtt/my_partitions.csv` or generated `flash-mqtt/build/partition_table/partition-table.csv` (so offsets/sizes are visible)
+* `Dockerfile`, `docker-compose.yml`
+* `README.md` (this file)
+* (Optional) `TESTING.md` with the short test plan
+
+---
+
+## 12. Troubleshooting & common errors
+
+**spiffsgen.py: No such file**
+
+* Check `echo $IDF_PATH` and `ls $IDF_PATH/components/spiffs/`. The script must exist there; if not, instruct collaborators to install the same ESP-IDF version or copy `spiffsgen.py` into the repo.
+
+**esptool.py: command not found**
+
+* Ensure `pip3 install --user esptool` was run and `$HOME/.local/bin` is in PATH; or install `esptool.py` system-wide.
+
+**QEMU not found or incompatible**
+
+* Use the Docker images provided (they bundle QEMU) or install Espressif's QEMU release from [https://github.com/espressif/qemu/releases](https://github.com/espressif/qemu/releases).
+
+**Merged image boots but no MQTT messages**
+
+* Verify the DEVICE\_ID & TOPIC printed in QEMU logs.
+* Verify you subscribe to the exact topic (topics are case-sensitive).
+* If using a public broker (eg `broker.hivemq.com`) ensure no firewall prevents network access.
+
+**Docker image baked wrong binary**
+
+* Edit `COPY` line in Dockerfile to the correct `flash_deviceX.bin`; rebuild image and update `docker-compose.yml`.
+
+**Partition offsets mismatch**
+
+* Always check `flash-mqtt/build/partition_table/partition-table.csv` or `flash-mqtt/my_partitions.csv` for offsets and sizes; use those values when running `spiffsgen.py` and `esptool merge_bin`.
+
+---
+
+## 13. Useful links (for collaborators)
+
+* ESP-IDF get-started: [https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/)
+* esptool: [https://github.com/espressif/esptool](https://github.com/espressif/esptool)
+* Espressif QEMU releases (prebuilt xtensa QEMU): [https://github.com/espressif/qemu/releases](https://github.com/espressif/qemu/releases)
+* Mosquitto client: [https://mosquitto.org/download/](https://mosquitto.org/download/)
+
+---
+
+## 14. If something fails
+
+Copy the exact command you ran and paste the full terminal output into an issue or message; include:
+
+* output of `echo $IDF_PATH`
+* `idf.py --version` (if building)
+* contents of `flash-mqtt/build/partition_table/partition-table.csv`
+
+---
+
+If you want, I can now commit this document into your repo (I will provide the exact `git add/commit/push` commands) or create a `flash-mqtt/README.md` with the focused ESP-IDF & QEMU install steps. Tell me which and I will produce the commands.
