@@ -15,10 +15,8 @@ This repository allows you to simulate **ESP32 devices** running MQTT applicatio
   sudo apt-get install docker.io docker-compose -y
   sudo systemctl enable docker
   sudo systemctl start docker
-  sudo usermod -aG docker $USER
   ```
 
-  > Logout and log back in to apply user group changes.
 
 * **Windows/Mac:**
   Install [Docker Desktop](https://www.docker.com/products/docker-desktop/).
